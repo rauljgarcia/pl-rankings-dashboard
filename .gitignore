@@ -1,0 +1,20 @@
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Editor / OS files
+.DS_Store
+.vscode/
+
+# Local data outputs
+
+
+# notebook
+pl_ranking_notebook.ipynb
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Excel temp files
+~$*.xlsx
