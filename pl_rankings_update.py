@@ -5,12 +5,17 @@ from datetime import datetime, timezone
 import pandas as pd
 import requests
 
+
 STANDINGS_URL = "https://sdp-prem-prod.premier-league-prod.pulselive.com/api/v5/competitions/8/seasons/2025/standings?live=false"
 MATCHWEEK_MATCHES_URL_TMPL = "https://sdp-prem-prod.premier-league-prod.pulselive.com/api/v1/competitions/8/seasons/2025/matchweeks/{matchweek}/matches"
+NEXTFIXTURE_URL_TMPL = (
+    "https://sdp-prem-prod.premier-league-prod.pulselive.com/api/v1/"
+    "competitions/8/seasons/2025/teams/{team_id}/nextfixture"
+)
 HISTORY_CSV = "pl_standings_history.csv"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-COLS = [
+PHASE_A_COLS = [
     "snapshot_utc",
     "season_id",
     "matchweek",
@@ -26,6 +31,8 @@ COLS = [
     "points",
 ]
 
+COLS = PHASE_A_COLS + ["next_opponent_id", "next_opponent_name"]
+
 
 def fetch_standings_json(url: str) -> dict:
     r = requests.get(url, headers=HEADERS, timeout=30)
@@ -34,7 +41,7 @@ def fetch_standings_json(url: str) -> dict:
 
 
 def is_matchweek_complete(matchweek: int) -> bool:
-    url = url = MATCHWEEK_MATCHES_URL_TMPL.format(matchweek=matchweek)
+    url = MATCHWEEK_MATCHES_URL_TMPL.format(matchweek=matchweek)
 
     r = requests.get(url, headers=HEADERS, timeout=30)
     r.raise_for_status()
@@ -44,23 +51,17 @@ def is_matchweek_complete(matchweek: int) -> bool:
     if not matches:
         return False
 
-    if len(matches) != 10:
+    if len(matches) != 10:  # 10 matches are required, else 20 teams didn't play
         return False
     periods = {m.get("period") for m in matches}
 
+    # return will be a boolean on the whole set of periods in the json
     return periods == {"FullTime"}
 
 
 def parse_standings(url: str) -> pd.DataFrame:
 
     standings_json = fetch_standings_json(url)
-
-    matchweek = standings_json["matchweek"]
-    if matchweek is None:
-        raise RuntimeError("No matchweek in standings JSON.")
-
-    if not is_matchweek_complete(matchweek):
-        return pd.DataFrame(columns=COLS)
 
     # Minimum defensive checks. This keeps the “defensive parsing” requirement.
     if "tables" not in standings_json or not standings_json["tables"]:
@@ -73,8 +74,12 @@ def parse_standings(url: str) -> pd.DataFrame:
 
     snapshot_utc = datetime.now(timezone.utc).isoformat(timespec="seconds")
     season_id = standings_json["season"]["id"]
+    matchweek = standings_json["matchweek"]
 
     all_rows = []
+
+    if not is_matchweek_complete(matchweek):
+        return pd.DataFrame(columns=PHASE_A_COLS)
 
     for entry in entries:
         overall = entry["overall"]
@@ -112,14 +117,55 @@ def parse_standings(url: str) -> pd.DataFrame:
 
     df = pd.DataFrame(all_rows)
     if df.empty:
-        raise RuntimeError("Parsed 0 rows - PL standings structure  may have changed.")
+        raise RuntimeError("Parsed 0 rows - PL standings structure may have changed.")
 
     # Sanity check for any odd payloads
     positions = sorted([row["position"] for row in all_rows])
     if positions != list(range(1, 21)):
         raise RuntimeError("Positions are not exactly 1...20.")
+    return df[PHASE_A_COLS]
 
-    return df[COLS]
+
+def fetch_next_fixture_json(team_id: str) -> dict:
+    url = NEXTFIXTURE_URL_TMPL.format(team_id=team_id)
+    r = requests.get(url, headers=HEADERS, timeout=30)
+    r.raise_for_status()
+    return r.json()
+
+
+def extract_next_opponent(team_id: str, fixture: dict) -> tuple[str, str]:
+    home = fixture.get("homeTeam", {})
+    away = fixture.get("awayTeam", {})
+
+    home_id = str(home.get("id"))
+    away_id = str(away.get("id"))
+    team_id = str(team_id)
+
+    if team_id == home_id:
+        return str(away.get("id")), away.get("shortName") or away.get("name")
+    if team_id == away_id:
+        return str(home.get("id")), home.get("shortName") or home.get("name")
+
+    raise RuntimeError(f"Team {team_id} not found in nextfixture match.")
+
+
+def add_next_opponents(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+
+    next_ids = []
+    next_names = []
+
+    for team_id in df["team_id"]:
+        fixture = fetch_next_fixture_json(team_id)
+        opp_id, opp_name = extract_next_opponent(team_id, fixture)
+        next_ids.append(opp_id)
+        next_names.append(opp_name)
+
+    df = df.copy()
+    df["next_opponent_id"] = next_ids
+    df["next_opponent_name"] = next_names
+    return df
 
 
 def append_history(df_new: pd.DataFrame, history_csv: str):
@@ -130,7 +176,7 @@ def append_history(df_new: pd.DataFrame, history_csv: str):
 
     matchweek = df_new["matchweek"].iloc[0]
 
-    # If history exists, check the last stored PL update date
+    # If history exists, dedupe by matchweek (append-only snapshots)
     if os.path.exists(history_csv):
         hist = pd.read_csv(history_csv)
 
@@ -156,6 +202,11 @@ def main():
     if df_new.empty:
         print("No completed matchweek snapshot available. Exiting.")
         return
+
+    df_new = add_next_opponents(df_new)
+
+    # Now the columns exist
+    df_new = df_new[COLS]
 
     append_history(df_new, HISTORY_CSV)
 
