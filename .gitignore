@@ -8,7 +8,7 @@ env/
 .vscode/
 
 # Local data outputs
-
+pl_standings_history.csv
 
 # notebook
 pl_ranking_notebook.ipynb
