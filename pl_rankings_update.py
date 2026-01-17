@@ -31,7 +31,7 @@ PHASE_A_COLS = [
     "points",
 ]
 
-COLS = PHASE_A_COLS + ["next_opponent_id", "next_opponent_name"]
+COLS = PHASE_A_COLS + ["next_opponent_id", "next_opponent_name", "is_home_next"]
 
 
 def fetch_standings_json(url: str) -> dict:
@@ -133,7 +133,7 @@ def fetch_next_fixture_json(team_id: str) -> dict:
     return r.json()
 
 
-def extract_next_opponent(team_id: str, fixture: dict) -> tuple[str, str]:
+def extract_next_opponent(team_id: str, fixture: dict) -> tuple[str, str, bool]:
     home = fixture.get("homeTeam", {})
     away = fixture.get("awayTeam", {})
 
@@ -142,9 +142,18 @@ def extract_next_opponent(team_id: str, fixture: dict) -> tuple[str, str]:
     team_id = str(team_id)
 
     if team_id == home_id:
-        return str(away.get("id")), away.get("shortName") or away.get("name")
+        return (
+            str(away.get("id")),
+            away.get("shortName") or away.get("name"),
+            True,
+        )
+
     if team_id == away_id:
-        return str(home.get("id")), home.get("shortName") or home.get("name")
+        return (
+            str(home.get("id")),
+            home.get("shortName") or home.get("name"),
+            False,
+        )
 
     raise RuntimeError(f"Team {team_id} not found in nextfixture match.")
 
@@ -155,16 +164,19 @@ def add_next_opponents(df: pd.DataFrame) -> pd.DataFrame:
 
     next_ids = []
     next_names = []
+    next_home_flags = []
 
     for team_id in df["team_id"]:
         fixture = fetch_next_fixture_json(team_id)
-        opp_id, opp_name = extract_next_opponent(team_id, fixture)
+        opp_id, opp_name, is_home = extract_next_opponent(team_id, fixture)
         next_ids.append(opp_id)
         next_names.append(opp_name)
+        next_home_flags.append(is_home)
 
     df = df.copy()
     df["next_opponent_id"] = next_ids
     df["next_opponent_name"] = next_names
+    df["is_home_next"] = next_home_flags
     return df
 
 
