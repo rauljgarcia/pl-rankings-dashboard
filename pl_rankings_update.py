@@ -112,9 +112,31 @@ def is_matchweek_complete(matchweek: int) -> bool:
         requests.RequestException: For network-related errors (timeouts, etc.).
         ValueError: If the response body is not valid JSON.
     """
+
+
+def is_matchweek_complete(matchweek: int) -> bool:
+    """
+    Determine whether a matchweek is fully complete.
+
+    A matchweek is considered complete when:
+    - all matches have period == "FullTime", and
+    - 20 unique teams appear across the fixtures (covers normal weeks and avoids
+      partial/duplicate data issues).
+
+    Args:
+        matchweek: Matchweek number to check.
+
+    Returns:
+        True if the matchweek appears complete, otherwise False.
+
+    Raises:
+        requests.HTTPError: If the matches endpoint returns a non-2xx status.
+        requests.RequestException: For network-related errors (timeouts, etc.).
+        ValueError: If the response body is not valid JSON.
+    """
     url = MATCHWEEK_MATCHES_URL_TMPL.format(matchweek=matchweek)
 
-    r = requests.get(url, headers=HEADERS, timeout=30)
+    r = requests.get(url, headers=HEADERS, timeout=30, params={"_limit": 100})
     r.raise_for_status()
     j = r.json()
 
@@ -122,12 +144,27 @@ def is_matchweek_complete(matchweek: int) -> bool:
     if not matches:
         return False
 
-    if len(matches) != 10:  # 10 matches are required, else 20 teams didn't play
+    if any(m.get("period") != "FullTime" for m in matches):
         return False
-    periods = {m.get("period") for m in matches}
 
-    # return will be a boolean on the whole set of periods in the json
-    return periods == {"FullTime"}
+    team_ids = set()
+    for m in matches:
+        home = m.get("homeTeam", {})
+        away = m.get("awayTeam", {})
+        if home.get("id") is not None:
+            team_ids.add(str(home["id"]))
+        if away.get("id") is not None:
+            team_ids.add(str(away["id"]))
+
+    # 🔍 Optional debug (safe to leave in or remove later)
+    print(
+        f"matchweek={matchweek} "
+        f"matches={len(matches)} "
+        f"periods={set(m.get('period') for m in matches)} "
+        f"teams={len(team_ids)}"
+    )
+
+    return len(team_ids) == 20
 
 
 def parse_standings(url: str) -> pd.DataFrame:
